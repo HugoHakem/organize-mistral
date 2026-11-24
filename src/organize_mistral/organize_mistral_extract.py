@@ -25,6 +25,7 @@ class PaperResult:
     markdown_path: Path
     copied_images: int
     rewritten_refs: int
+    removed_refs: int = 0
 
 
 def slugify(value: str) -> str:
@@ -131,7 +132,29 @@ def rewrite_markdown(
     return content, rewritten_refs, missing_refs
 
 
-def process_paper(paper_dir: Path, md_root: Path, img_root: Path, dry_run: bool) -> PaperResult:
+def drop_local_images(content: str) -> tuple[str, int]:
+    """Remove local image references (Markdown and <img>), keeping remote ones."""
+    removed = 0
+
+    def drop(match: re.Match[str], ref_group: int) -> str:
+        nonlocal removed
+        if not is_local_image_ref(match.group(ref_group)):
+            return match.group(0)
+        removed += 1
+        return ""
+
+    content = MARKDOWN_IMAGE_RE.sub(lambda m: drop(m, 2), content)
+    content = re.sub(
+        r"<img\b[^>]*?\bsrc=[\"']([^\"']+)[\"'][^>]*>", lambda m: drop(m, 1), content, flags=re.IGNORECASE
+    )
+    # Lines that only held an image are now blank; keep at most one blank line in a row.
+    content = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", content)
+    return content, removed
+
+
+def process_paper(
+    paper_dir: Path, md_root: Path, img_root: Path, dry_run: bool, drop_images: bool = False
+) -> PaperResult:
     source_markdown = paper_dir / "markdown.md"
     if not source_markdown.exists():
         raise FileNotFoundError(f"missing {source_markdown}")
@@ -141,8 +164,15 @@ def process_paper(paper_dir: Path, md_root: Path, img_root: Path, dry_run: bool)
     markdown_path = md_root / f"{paper_slug}.md"
     image_out_dir = img_root / paper_slug
 
-    image_targets = build_image_targets(paper_dir, image_out_dir)
     content = source_markdown.read_text(encoding="utf-8")
+    if drop_images:
+        stripped, removed = drop_local_images(content)
+        if not dry_run:
+            markdown_path.parent.mkdir(parents=True, exist_ok=True)
+            markdown_path.write_text(stripped, encoding="utf-8")
+        return PaperResult(paper_dir.name, markdown_path, copied_images=0, rewritten_refs=0, removed_refs=removed)
+
+    image_targets = build_image_targets(paper_dir, image_out_dir)
     rewritten_content, rewritten_refs, missing_refs = rewrite_markdown(content, image_targets, markdown_path)
     if missing_refs:
         refs = ", ".join(sorted(set(missing_refs)))
@@ -183,6 +213,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--img-root", type=Path, default=Path("papers/img"))
     parser.add_argument("--paper", help="Process only one extracted paper directory name.")
     parser.add_argument("--dry-run", action="store_true", help="Report work without writing files.")
+    parser.add_argument(
+        "--no-images",
+        action="store_true",
+        help="Remove local image references instead of copying images (for exports downloaded without images).",
+    )
     return parser.parse_args(argv)
 
 
@@ -205,12 +240,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     for paper_dir in paper_dirs:
-        result = process_paper(paper_dir, args.md_root, args.img_root, args.dry_run)
+        result = process_paper(paper_dir, args.md_root, args.img_root, args.dry_run, drop_images=args.no_images)
         action = "would write" if args.dry_run else "wrote"
-        print(
-            f"{action} {result.markdown_path} "
-            f"({result.rewritten_refs} refs, {result.copied_images} images)"
+        detail = (
+            f"{result.removed_refs} image refs removed"
+            if args.no_images
+            else f"{result.rewritten_refs} refs, {result.copied_images} images"
         )
+        print(f"{action} {result.markdown_path} ({detail})")
 
     return 0
 

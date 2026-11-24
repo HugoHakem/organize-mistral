@@ -32,6 +32,7 @@ Options:
 
 - `--paper "<export folder name>"`: process only that export.
 - `--dry-run`: report what would be written, without writing.
+- `--no-images`: for exports downloaded without images; removes the local image references (`![img-0.jpeg](img-0.jpeg)`, `<img src="img-0.jpeg">`) instead of copying images, and writes nothing to `--img-root`. Remote image URLs are kept. Without this flag, a missing image is an error.
 
 For a category subfolder, point all three roots at it:
 
